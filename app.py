@@ -3023,8 +3023,10 @@ if st.session_state["auth"] == "jefe":
         if eficiencia_promedio > 0:
             st.progress(min(eficiencia_promedio / 100, 1.0))
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Parte Diario", "Historial de Avances", "Cronograma Valorizado", "Caja Chica", "Donaciones"])
-
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+                "Parte Diario", "Historial de Avances", "Cronograma Valorizado",
+                "Caja Chica", "Donaciones", "📊 Reportes Periódicos"
+            ])
         st.divider()
 
         # ==================== TAB 1: PARTE DIARIO (JEFE) - VERSIÓN MEJORADA ====================
@@ -5206,6 +5208,141 @@ if st.session_state["auth"] == "jefe":
                                     st.rerun()
                 else:
                     st.info("No hay donaciones registradas con este filtro")
+        # ==================== TAB 6: REPORTES PERIÓDICOS (JEFE) ====================
+        with tab6:
+            st.markdown("## 📊 Reportes Periódicos")
+            st.caption("Genera reportes consolidados: semanal (7 días), quincenal (15 días) o mensual (30 días)")
+
+            from datetime import timedelta
+
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                tipo_reporte = st.selectbox(
+                    "Tipo de reporte:",
+                    ["Semanal (últimos 7 días)",
+                    "Quincenal (últimos 15 días)",
+                    "Mensual (últimos 30 días)",
+                    "Personalizado"],
+                    key="tipo_reporte_periodico"
+                )
+
+            hoy = date.today()
+            if tipo_reporte.startswith("Semanal"):
+                fecha_inicio_rep = hoy - timedelta(days=7)
+                fecha_fin_rep    = hoy
+                label_tipo       = "Semanal"
+            elif tipo_reporte.startswith("Quincenal"):
+                fecha_inicio_rep = hoy - timedelta(days=15)
+                fecha_fin_rep    = hoy
+                label_tipo       = "Quincenal"
+            elif tipo_reporte.startswith("Mensual"):
+                fecha_inicio_rep = hoy - timedelta(days=30)
+                fecha_fin_rep    = hoy
+                label_tipo       = "Mensual"
+            else:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    fecha_inicio_rep = st.date_input(
+                        "Fecha inicio", value=hoy - timedelta(days=7),
+                        key="rep_fecha_ini")
+                with col_b:
+                    fecha_fin_rep = st.date_input(
+                        "Fecha fin", value=hoy, key="rep_fecha_fin")
+                label_tipo = "Personalizado"
+
+            st.info(f"📅 Período: **{fecha_inicio_rep}** → **{fecha_fin_rep}**")
+
+            # ── Filtrar avances del período
+            avances_todos = obtener_avances_obra(obra_codigo) or []
+            avances_periodo = []
+            for av in avances_todos:
+                f = av.get("fecha", "")
+                try:
+                    f_date = pd.to_datetime(f).date()
+                    if fecha_inicio_rep <= f_date <= fecha_fin_rep:
+                        avances_periodo.append(av)
+                except Exception:
+                    pass
+
+            st.metric("Partes diarios en el período", len(avances_periodo))
+
+            if not avances_periodo:
+                st.warning("⚠️ No hay partes diarios en el rango seleccionado.")
+            else:
+                # ── Métricas rápidas
+                total_gen = sum(
+                    float((av.get("totales") or {}).get(
+                        "total_general_ejecutado",
+                        (av.get("totales") or {}).get("total_general", 0)) or 0)
+                    for av in avances_periodo
+                )
+                avance_sum = sum(
+                    float(av.get("avance", 0) or 0) for av in avances_periodo)
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("💰 Total Ejecutado", f"S/. {total_gen:,.2f}")
+                c2.metric("📈 Avance acumulado", f"{avance_sum:.1f}%")
+                c3.metric("📋 Partes diarios",   len(avances_periodo))
+
+                # ── Botón generar PDF
+                if st.button("📄 Generar PDF del Reporte", use_container_width=True,
+                            type="primary", key="btn_gen_reporte"):
+                    try:
+                        from modules.pdf_report import build_reporte_periodico_pdf
+                        pdf_bytes = build_reporte_periodico_pdf(
+                            obra_code    = obra_codigo,
+                            obra_name    = obra_nombre,
+                            tipo_reporte = label_tipo,
+                            fecha_inicio = str(fecha_inicio_rep),
+                            fecha_fin    = str(fecha_fin_rep),
+                            emitido_por  = st.session_state.get(
+                                            "usuario_logueado", "jefe"),
+                            avances      = avances_periodo,
+                        )
+                        filename = _safe_pdf_filename(
+                            f"REPORTE_{label_tipo.upper()}_{obra_codigo}_"
+                            f"{fecha_inicio_rep}_{fecha_fin_rep}.pdf")
+
+                        st.download_button(
+                            "⬇️ Descargar PDF",
+                            data      = pdf_bytes,
+                            file_name = filename,
+                            mime      = "application/pdf",
+                            use_container_width = True,
+                        )
+
+                        # Subir a Drive (opcional, reutiliza tu helper)
+                        webapp_url, token = _get_drive_conf()
+                        if webapp_url and token:
+                            from modules.drive_upload import upload_pdf_base64
+                            resp = upload_pdf_base64(
+                                webapp_url, token, obra_codigo, filename, pdf_bytes)
+                            if resp.get("ok") or resp.get("status") == "success":
+                                st.success("✅ PDF subido a Google Drive")
+                            else:
+                                st.warning(f"Drive: {resp}")
+                    except Exception as e:
+                        st.error(f"❌ Error al generar PDF: {e}")
+
+                # ── Tabla de detalle
+                with st.expander("Ver detalle de partes diarios del período"):
+                    filas = []
+                    for av in sorted(avances_periodo,
+                                    key=lambda x: x.get("fecha", "")):
+                        tot  = av.get("totales", {}) or {}
+                        part = av.get("partida", {}) or {}
+                        tg   = (float(tot.get("total_general_ejecutado", 0) or 0)
+                                or float(tot.get("total_general", 0) or 0))
+                        filas.append({
+                            "Fecha":        av.get("fecha", ""),
+                            "Responsable":  av.get("responsable", ""),
+                            "Partida":      av.get("nombre_partida",
+                                            part.get("nombre", "")),
+                            "Avance (%)":   av.get("avance", 0),
+                            "Total S/.":    round(tg, 2),
+                        })
+                    st.dataframe(pd.DataFrame(filas),
+                                use_container_width=True, hide_index=True)
 
     # ==================== PANTALLA DE BIENVENIDA ====================
     else:

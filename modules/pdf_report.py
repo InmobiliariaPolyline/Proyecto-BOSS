@@ -151,3 +151,98 @@ def build_parte_pdf(
 
     doc.build(story)
     return buf.getvalue()
+
+
+# Al final de pdf_report.py
+
+def build_reporte_periodico_pdf(
+    obra_code: str,
+    obra_name: str,
+    tipo_reporte: str,          # "Semanal", "Quincenal", "Mensual"
+    fecha_inicio: str,
+    fecha_fin: str,
+    emitido_por: str,
+    avances: list,              # Lista de avances del período
+) -> bytes:
+    """
+    Genera un PDF consolidado de avances para un período dado.
+    """
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.6*cm, rightMargin=1.6*cm,
+                            topMargin=1.4*cm, bottomMargin=1.4*cm)
+    story = []
+
+    # ── Título
+    story.append(Paragraph(
+        f"<b>REPORTE {tipo_reporte.upper()} DE OBRA</b>", styles["Title"]))
+    story.append(Spacer(1, 6))
+
+    # ── Metadatos
+    meta = [
+        ["Obra",        f"{obra_code} – {obra_name}"],
+        ["Período",     f"{fecha_inicio}  →  {fecha_fin}"],
+        ["Tipo",        tipo_reporte],
+        ["Emitido por", emitido_por],
+        ["Generado",    datetime.now().strftime("%d/%m/%Y %H:%M:%S")],
+    ]
+    story.append(Table(meta, colWidths=[4*cm, 12*cm]))
+    story.append(Spacer(1, 12))
+
+    # ── Resumen acumulado del período
+    total_mo = total_mat = total_eq = total_otros = 0.0
+    avance_total = 0.0
+    horas_total  = 0.0
+
+    for av in avances:
+        tot = av.get("totales", {}) or {}
+        total_mo    += float(tot.get("mano_de_obra", 0) or 0)
+        total_mat   += float(tot.get("materiales",   0) or 0)
+        total_eq    += float(tot.get("equipos",      0) or 0)
+        total_otros += float(tot.get("otros",        0) or 0)
+        avance_total += float(av.get("avance", 0) or 0)
+        part = av.get("partida", {}) or {}
+        horas_total += float(part.get("jornal_horas", 0) or 0)
+
+    total_general = total_mo + total_mat + total_eq + total_otros
+
+    resumen = [
+        ["Campo",                    "Valor"],
+        ["Partes diarios incluidos", str(len(avances))],
+        ["Avance acumulado (%)",     f"{avance_total:.1f} %"],
+        ["Horas laborales (HH)",     f"{horas_total:.1f}"],
+        ["Total Mano de Obra (S/)",  f"{total_mo:,.2f}"],
+        ["Total Materiales (S/)",    f"{total_mat:,.2f}"],
+        ["Total Equipos (S/)",       f"{total_eq:,.2f}"],
+        ["Total Otros (S/)",         f"{total_otros:,.2f}"],
+        ["TOTAL GENERAL (S/)",       f"{total_general:,.2f}"],
+    ]
+    story.append(Paragraph("<b>Resumen del Período</b>", styles["Heading2"]))
+    story.append(Spacer(1, 4))
+    story.append(_table(resumen, col_widths=[6*cm, 10*cm]))
+    story.append(Spacer(1, 12))
+
+    # ── Detalle día a día
+    story.append(Paragraph("<b>Detalle por Parte Diario</b>", styles["Heading2"]))
+    story.append(Spacer(1, 4))
+
+    det_headers = ["Fecha", "Responsable", "Partida", "Avance%", "Total S/"]
+    det_rows = []
+    for av in sorted(avances, key=lambda x: x.get("fecha", "")):
+        tot = av.get("totales", {}) or {}
+        part = av.get("partida", {}) or {}
+        tg = (float(tot.get("total_general_ejecutado", 0) or 0)
+              or float(tot.get("total_general", 0) or 0))
+        det_rows.append([
+            str(av.get("fecha", "")),
+            str(av.get("responsable", "")),
+            str(av.get("nombre_partida", part.get("nombre", ""))),
+            f"{av.get('avance', 0)}%",
+            f"S/. {tg:,.2f}",
+        ])
+
+    story.append(_table([det_headers] + det_rows))
+    story.append(Spacer(1, 10))
+
+    doc.build(story)
+    return buf.getvalue()
